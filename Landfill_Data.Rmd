@@ -1,0 +1,665 @@
+---
+title: "Analyzing LMOP Data using Leaflet"
+author: "Isit Pokharel"
+output:
+  html_document:
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, echo = TRUE) 
+```
+
+```{r}
+#install packages
+rm(list=ls())
+library(rgdal);library(leaflet);library(readxl);library(dplyr)
+library(rgeos);library(RColorBrewer)
+rm(list=ls())
+library(leaflet);
+library(mapview);library(sp);library(rgdal)
+library(htmltools);library(scales);library(leafpop)
+library(expss);library(tidyverse);#library(leaflet.mincharts)
+library(sf)
+library(expss)
+
+
+```
+
+## Introduction
+
+In this project, I have used the LMOP Database, which contains key information about MSW (Municipal Solid Waste) landfills and LFG (Landfill Gas) energy projects in the United States, alongside the leaflet library in R to create a few maps to identify any noticeable geographic patterns in the locations of landfills in the United States. It is important to note that the LMOP database does not contain information on every available landfill in the United States. 
+
+Some of the key variables I have focused on in this report from the LMOP Database are related to their operational status, ownership type (Public vs Private), landfill waste amount, and LFG collection by landfills. I've also used state level population data to analyze some of the key varialbes mentioned in per capita terms. 
+
+```{r}
+shape_file_folder = "/Users/ipokharel/Desktop/College/GIS"
+setwd(shape_file_folder)
+# /Users/ipokharel/Desktop/College/landfilllmopdata.xlsx
+#create a series of 4 maps that analyze locations and characteristics of landfills in the United States
+my_initial_data <- read_excel("/Users/ipokharel/Desktop/College/landfillllmopdata.xlsx", sheet = "LMOP Database")
+my_data_labels <- read_excel("/Users/ipokharel/Desktop/College/landfillllmopdata.xlsx", sheet = "Field Descriptions")
+us_states<-readOGR(dsn=".",layer="cb_2018_us_state_500k")   
+```
+## Methods
+
+For this report, the two main R libraries that I have used are dplyr and leaflet. dplyr is mostly used to filter datasets, create group level aggregates by states, and other dataset attributes. Leaflet is primarily used for creating map visualizations. In addition to the LMOP Database, I have used two additional datasets. To create state-level polygon layers in the map visualizations, I have used state-level Cartographic Boundary Files from the Census Bureau, and state-level population data. State-level population data was used to calculate per capita metrics, and state-level Cartographic Boundary Files were mostly used to create state-level choropleth and graduated symbol maps.
+
+## Results
+
+```{r}
+
+# cite mercelles page 142 about creating circle marker size
+#GRADUATED SYMBOL MAPS
+
+
+#Waste in Place (tons) by 
+
+waste_by_state <- my_initial_data %>%
+  
+  #group_by(STUSPS = State) %>% # to rename the state to STUSPS
+  group_by( STUSPS = State) %>% 
+  summarize(waste_in_tons = sum(`Waste in Place (tons)`, na.rm = TRUE),
+            number_landfills = n(),
+            lfg_generated = sum(`LFG Generated (mmscfd)`,na.rm = TRUE),
+            lfg_collected = sum(`LFG Collected (mmscfd)`,na.rm = TRUE),
+            lfg_flared = sum(`LFG Flared (mmscfd)`,na.rm = TRUE),
+            #lfg_release_total  = lfg_generated-lfg_collected-lfg_flared
+            lfg_collected_percent = round((lfg_collected/lfg_generated)*100,2)
+            )
+
+#get population data of US STATES
+url <- "https://gist.githubusercontent.com/bradoyler/0fd473541083cfa9ea6b5da57b08461c/raw/fa5f59ff1ce7ad9ff792e223b9ac05c564b7c0fe/us-state-populations.csv"
+population <-read.csv(url)
+
+
+
+
+#this merged dataset has data for each state with waste_in_tons, number_of_landfills, lfg_generated, and lfg_collected
+merged_data_without_pop <- merge(us_states,waste_by_state, by = "STUSPS")
+
+#merge with population data to get population of each state
+merged_data <- merge(merged_data_without_pop,population, by.x = "STUSPS", by.y = "code")
+
+
+states_central <- data.frame(gCentroid(us_states, byid = TRUE))
+
+# get the geometric centres of polygons
+merged_data$center_x <- states_central$x
+merged_data$center_y <- states_central$y
+
+```
+
+
+```{r}
+
+
+#population polygon color and labels
+pop_colors <- colorRampPalette(c("lightblue", "darkblue"))
+pop_breaks <- c(0, 1000000, 5000000, 10000000, 15000000, 20000000, Inf)
+pop_labels <- c("<1M", "1M-5M", "5M-10M", "10M-15M", "15M-20M", "20M+")
+merged_data$pop_labels <- cut(merged_data$pop_2014, breaks = pop_breaks, labels = pop_labels)
+pop_color_pallete <- brewer.pal(6, "Blues")
+pop_polygon_colors <- setNames(pop_color_pallete, pop_color_pallete)
+pal_pop <-colorFactor(palette = pop_polygon_colors , domain = merged_data$pop_labels)
+```
+
+
+### Number of landfills by state
+```{r}
+#trash in NYC
+img_df <- st_as_sf(data.frame(x = as.numeric(c("-73.984016")), y = as.numeric(c("40.754932"))),
+                   coords = c("x", "y"),
+                   crs = 4326)
+images <- "/Users/ipokharel/Desktop/College/trash.png"
+
+
+# circle markers labels and colors
+sizes <- c(6, 10, 14, 18)
+# Define the break points
+breaks <- c(0, 50, 100, 150, Inf)
+# Define the labels for each interval based on the range of number_landfills values
+labels <- c(paste0("0 to ", breaks[2] -1 ),
+           paste0(breaks[2], " to ", breaks[3] - 1),
+           paste0(breaks[3], " to ", breaks[4] - 1),
+           paste0( breaks[4], " and Above "))
+# labels to circle size mapping 
+size_mapping <- setNames(sizes, labels)
+ 
+#add new columns to the dataset with vectors for circle size and circle_labels
+merged_data$circle_label <- cut(merged_data$number_landfills, breaks = breaks, labels = labels)
+merged_data$circle_size <- size_mapping[as.character(merged_data$circle_label)]
+
+#color_palette <- rainbow(5, start = 1/2, end = 0)
+color_palette <- c("#FFFFFF","#FFAA0000","#FF550000","#FF000000" )
+
+
+# Use the color palette to assign a color to each size in the sizes vector
+size_colors <- setNames(color_palette, sizes)
+pal2<-colorFactor(palette=size_colors,
+                  domain = merged_data$circle_label)
+
+state_by_waste <- leaflet(us_states)%>%
+  setView(lng = -98.35, lat = 39.50, zoom = 4) %>%
+  addTiles() %>% 
+  addProviderTiles("CartoDB.VoyagerLabelsUnder") %>%
+  #addProviderTiles(provider="Stamen.Toner") %>%
+  addPolygons(
+    data = merged_data,
+    weight=.75,   # line thickness
+    color="black",
+    fillColor = ~pal_pop(pop_labels),  # color by population
+    fillOpacity = .8,
+    label= paste(merged_data$NAME),
+    popup = ~paste(merged_data$NAME, 
+      "<br>Population: ", pop_2014,
+      "<br>Waste in Million U.S. ton: ", round(waste_in_tons/1000000,2)),
+    group = "Population") %>%  #transparency 
+  addCircleMarkers(data <- merged_data@data,
+                   lng= merged_data$center_x,lat=merged_data$center_y,
+                   radius = as.numeric(merged_data$circle_size),
+                   weight = 2,
+                   fillColor = ~pal2(merged_data$circle_label), #color of circles
+                   fillOpacity = 0.8,
+                   stroke = TRUE,
+                   color = "black", #stroke color
+                   label= paste(merged_data$NAME),
+                   popup = ~paste(merged_data$NAME,
+                     "<br>Number of Landfill Sites: ",merged_data$number_landfills,
+                     "<br>Population: ", merged_data$pop_2014,
+                     "<br>Landfill Waste in Mil U.S. ton: ", round(merged_data$waste_in_tons/1000000,2)),
+                   group = "Number of Landfills"
+      ) %>%
+       addMarkers(data = img_df, group = "img_df", 
+                  label = "My City's Trash") %>%
+       addPopupImages(images, group = "img_df") %>%
+      addLayersControl( 
+        overlayGroups = c("Population","Number of Landfills"),
+        options = layersControlOptions(collapsed = FALSE)) %>%
+      addLegend(position="bottomleft",
+                 title="Number of Landfills",
+                 labels=merged_data$circle_label,
+                 pal = pal2,
+                 opacity = 0.8,
+                 values=na.omit(merged_data$circle_label) 
+                 ) %>%
+      addLegend(position="bottomright",
+               title="Population Size",
+               labels=merged_data$pop_labels,
+               pal = pal_pop,
+               opacity = 0.8,
+               values=na.omit(merged_data$pop_labels) 
+               )
+
+state_by_waste 
+```
+
+In the chart above, I have used the base map of America centered at the center of America and added a polygon layer on top of the base layer to visualize states based on their population. I have categorized each state into one of six population categories represented by a sequential scheme of six colors that range from light to dark blue. In determining the number of classes, I followed the "magical number seven" and limited the number of categories between 5 and 7 classes (Meirelles, 2013, p. 146). Since population category is ordered data that ranges from low to high, a sequential scheme is suited for the representation of this data in the choropleth map of states to show population category (Meirelles, 2013, p. 147).
+
+In the same map, I have also plotted graduated symbols - circles - on top of each state to represent the category corresponding to the number of landfills there are in each state. The number of landfill categories and color of each category is also determined following the same rule of the "magic number seven" and a sequential scheme of color to represent the ordered category data of the number of landfill categories. The color of circle markers contrasts the ones used for the polygon layer representing population size so that the data being represented by circle markers - the number of landfill categories - is easily perceivable. The bigger size and darker color of circle markers atop each state means that the state has a higher number of landfills.
+
+As we can see from the map, larger population states tend to have a higher number of landfills. California and Texas - two of the largest states in terms of population - have the highest and second-highest number of landfills in the US. Missouri, Tennessee, and North California seem to have a higher number of landfill sites compared to other states in the similar population category. I have also made labels and popups for each state that show population and waste in millions of US tons for each state available in this visualization.
+
+I've also included a picture of trash from my city which you can see by clicking on the marker that points to new york city on the map. 
+
+### Dot distribution maps of landfills by their operating status
+```{r}
+
+#base map with polygon layer of american states centered at 
+# lng = -98.35, lat = 39.50 which is center of america
+
+
+
+
+my_initial_data$`Current Landfill Status` <- factor(my_initial_data$`Current Landfill Status`, 
+                                                       levels = c("Open", "Closed", "Unknown"))
+
+pal1<-colorFactor(palette=c("green1", "red", "gray1"),
+                  domain = my_initial_data$`Current Landfill Status`)
+
+
+d <- leaflet(us_states) %>%
+     # center the view at the center of united states provided in lat & lon below. 
+      setView(lng = -98.35, lat = 39.50, zoom = 4) %>%
+      #addProviderTiles(provider="Stamen.Toner") %>%
+      addProviderTiles("CartoDB.VoyagerLabelsUnder")%>%
+      addPolygons(
+          data = merged_data,
+          weight=.75,   # line thickness
+          color="black",
+          fillColor = ~pal_pop(pop_labels),  # color by population
+          fillOpacity = .8,
+          label= paste(merged_data$NAME),
+          popup = ~paste(merged_data$NAME, 
+            "<br>Population: ", merged_data$pop_2014,
+            "<br>Waste in Million U.S. ton: ", round(merged_data$waste_in_tons/1000000,2)
+           ),
+          group = "Population") %>%  #transparency
+      addCircleMarkers(
+          data = my_initial_data %>% filter(`Current Landfill Status` == "Closed"),
+          radius = 2, 
+          color = "black",
+          fillColor = ~pal1(`Current Landfill Status`),
+          weight = 2,
+          fillOpacity = 0.8,
+          label= paste(my_initial_data$`Landfill ID`, ": ", my_initial_data$`Landfill Name`),
+          popup = ~paste(my_initial_data$`Landfill Name`, 
+                         "<br>City: ",my_initial_data$`City`,
+                         "<br>State: ",my_initial_data$`State`,
+                         "<br>Operating Status: ",my_initial_data$`Current Landfill Status`,
+                         "<br>Ownership Type: ",my_initial_data$`Ownership Type`,
+                         "<br>Operator Organization: ", my_initial_data$`Landfill Operator Organization`,
+                         "<br>Owner: ", my_initial_data$`Landfill Owner Organization(s)`,
+                         "<br>Waste in Place (tons): ", my_initial_data$`Waste in Place (tons)`
+                         ),
+          group = "Closed Landfills"
+            ) %>%
+      addCircleMarkers(
+          data = my_initial_data %>% filter(`Current Landfill Status` == "Open"),
+          radius = 2, 
+          color = "black",
+          fillColor = ~pal1(`Current Landfill Status`),
+          weight = 2,
+          fillOpacity = 0.8,
+          label= paste(my_initial_data$`Landfill ID`, ": ", my_initial_data$`Landfill Name`),
+          popup = ~paste(my_initial_data$`Landfill Name`, 
+                         "<br>City: ",my_initial_data$`City`,
+                         "<br>State: ",my_initial_data$`State`,
+                         "<br>Operating Status: ",my_initial_data$`Current Landfill Status`,
+                         "<br>Ownership Type: ",my_initial_data$`Ownership Type`,
+                         "<br>Operator Organization: ", my_initial_data$`Landfill Operator Organization`,
+                         "<br>Owner: ", my_initial_data$`Landfill Owner Organization(s)`,
+                         "<br>Waste in Place (tons): ", my_initial_data$`Waste in Place (tons)`
+                         ),
+          group = "Open Landfills"
+            ) %>%
+      addCircleMarkers(
+          data = my_initial_data %>% filter(`Current Landfill Status` == "Unknown"),
+          radius = 2, 
+          color = "black",
+          fillColor = ~pal1(`Current Landfill Status`),
+          weight = 2,
+          fillOpacity = 0.8,
+          label= paste(my_initial_data$`Landfill Name`),
+          popup = ~paste(my_initial_data$`Landfill Name`, 
+                         "<br>City: ",my_initial_data$`City`,
+                         "<br>State: ",my_initial_data$`State`,
+                         "<br>Operating Status: ",my_initial_data$`Current Landfill Status`,
+                         "<br>Ownership Type: ",my_initial_data$`Ownership Type`,
+                         "<br>Operator Organization: ", my_initial_data$`Landfill Operator Organization`,
+                         "<br>Owner: ", my_initial_data$`Landfill Owner Organization(s)`,
+                         "<br>Waste in Place (tons): ", my_initial_data$`Waste in Place (tons)`
+                         ),
+          group = "Unknown Landfill Status"
+            ) %>%
+      addLayersControl( 
+        overlayGroups = c("Population","Open Landfills","Closed Landfills", "Unknown Landfill Status"),
+        options = layersControlOptions(collapsed = TRUE)) %>%
+
+      addLegend(position="bottomleft",
+                 title="Landfills Status",
+                 labels=my_initial_data$`Current Landfill Status`,
+                 pal =pal1,
+                 opacity = 0.8,
+                 values=my_initial_data$`Current Landfill Status` # must specify df
+                 ) %>%
+      addLegend(position="bottomright",
+               title="Population Size",
+               labels=merged_data$pop_labels,
+               pal = pal_pop,
+               opacity = 0.8,
+               values=na.omit(merged_data$pop_labels) 
+               )
+
+d 
+
+# look at the distribution of closed landfills and open landfills. 
+#open ones are more spread out than closed
+
+
+#The location of closed landfills in the US varies widely depending on the state and region. However, generally speaking, older industrial and urban areas tend to have more closed landfills than newer suburban or rural areas. Some states with high numbers of closed landfills include New #Jersey, New York, Pennsylvania, and California, which have large populations and long histories of industrial activity. It's important to note that the location of closed landfills can also be influenced by state and local regulations, as well as the availability of alternative waste #management options.
+
+
+```
+In the visualization above, I have shown a dot distribution map represented by circle markers atop the choropleth map represented by the polygon layer to show the distribution of landfills across the US. Dot markers representing a single landfill are color-coded based on their operational status - red represents closed, and green represents open landfills. I have also employed layer control in this map so that either the polygon layer representing the population category of the state or the circle markers representing landfill operational status can be toggled on or off.
+
+At a glance, we can see that there is a high concentration of closed landfills in California and Texas, as they are the most populated states. Missouri, Tennessee, and North California also seem to have a large number of closed landfills. Additionally, we can see that there is a higher concentration of closed landfills in industrial rust belt states like Pennsylvania, Ohio, Michigan, Indiana, Illinois, Wisconsin, and New York. It makes sense because the industrial rust belt was the center of industry, and more industry produces more waste that needs to be disposed of.
+
+Unlike closed landfills, open landfills are more spread out across different states. It is again noticeable that the more the population, the more open landfills are present in the states. States represented by a lower shade of blue in the polygon layer usually have fewer numbers of open landfills. However, unlike the high concentration of closed landfills in only certain states, open landfills are much more spread out in their location.
+
+```{r}
+
+public_ownership <- my_initial_data %>% 
+  group_by(STUSPS = State, `Ownership Type`) %>% 
+  summarize( number_landfills = n()) %>%
+  group_by(STUSPS) %>%
+  summarize(total_landfills = sum(number_landfills),
+            public_landfills = sum(number_landfills[`Ownership Type` == "Public"]),
+            private_landfills = sum(number_landfills[`Ownership Type` == "Private"]),
+            unknown_landfills = sum(number_landfills[`Ownership Type` == "Unknown"]),
+            coowned_landfills = sum(number_landfills[`Ownership Type` == "Public/Private"]),
+            public_percent = (public_landfills / (private_landfills + public_landfills))*100)
+
+#adding public_percent column to merged dataset to see what percentage of
+#landfills are owned by state/public companies
+
+merged_ownership_data <- merge(merged_data, public_ownership, by = "STUSPS")
+
+#ownership polygon color and labels
+ownership_breaks <- c(0, 24, 49, 74, Inf)
+ownership_labels <- c("< 25%", " 25 % to 49% ", "50% to 74%", "75% to 100%")
+merged_ownership_data$ownership_labels <- cut(merged_ownership_data$public_percent, breaks = ownership_breaks, labels = ownership_labels)
+ownership_color_pallete <- c("firebrick","red","blue", "darkblue") #colorRampPalette(c("firebrick2", "darkblue"))(4)
+ownership_polygon_colors <- setNames(ownership_color_pallete, ownership_labels)
+ownership_pal <-colorFactor(palette = ownership_color_pallete , domain = merged_ownership_data$ownership_labels)
+
+```
+
+
+###  Public ownership of landfills by state
+```{r}
+
+#base map with polygon layer of american states centered at 
+# lng = -98.35, lat = 39.50 which is center of america
+
+#only take operational
+landfills_data <- my_initial_data 
+
+pal3 <-colorFactor(palette=c("red", "darkblue", "orange","yellow"),
+                  domain = landfills_data$`Ownership Type`)
+
+ownership_type <- leaflet(merged_ownership_data) %>%
+     # center the view at the center of united states provided in lat & lon below. 
+      setView(lng = -98.35, lat = 39.50, zoom = 4) %>%
+      #addProviderTiles(provider="Stamen.Toner") %>%
+      addProviderTiles("CartoDB.VoyagerLabelsUnder")%>%
+      #addTiles() %>%
+
+    addPolygons(
+        data = merged_ownership_data,
+        weight= 1,   # line thickness
+        color="black",
+        fillColor = ~ownership_pal(ownership_labels), 
+        fillOpacity = .4,
+        label= paste(merged_ownership_data$NAME),
+        popup = ~paste(merged_ownership_data$NAME, 
+          "<br>% of Landfills with Public Ownership: ", round(merged_ownership_data$public_percent,1),
+          "<br>Total Landfills: ", round(merged_ownership_data$number_landfills),
+          "<br>Publically Owned Landfills: ", round(merged_ownership_data$public_landfills),
+          "<br>Privately Owned Landfills: ", round(merged_ownership_data$private_landfills),
+          "<br>Landfill Ownership Unknown: ", round(merged_ownership_data$unknown_landfills),
+          "<br>Public/Private Co-Owned Landfills: ",round(merged_ownership_data$coowned_landfills)),
+        group = "Public vs Private Ownership") %>%  #transparency 
+      addCircleMarkers(
+        data = landfills_data %>% filter(`Ownership Type` == "Public"),
+        radius = 2, 
+        fillColor = ~pal3(`Ownership Type`),
+        color = "white",
+        weight = 2,
+        fillOpacity = 2,
+        label=paste(landfills_data$`Landfill Name`),
+        popup = ~paste(landfills_data$`Landfill Name`, 
+                       "<br>City: ",landfills_data$`City`,
+                       "<br>State: ",landfills_data$`State`,
+                       "<br>Ownership Type: ",landfills_data$`Ownership Type`,
+                       "<br>Operator Organization: ", landfills_data$`Landfill Operator Organization`,
+                       "<br>Owner: ", landfills_data$`Landfill Owner Organization(s)`,
+                       "<br>Waste in Place (U.S. ton): ", landfills_data$`Waste in Place (tons)`
+                       ),
+        group = "Publicly Owned Landfills"
+       ) %>%
+      addCircleMarkers(
+        data = landfills_data %>% filter(`Ownership Type` == "Private"),
+        radius = 2, 
+        fillColor = ~pal3(`Ownership Type`),
+        color = "white",
+        weight = 2,
+        fillOpacity = 2,
+        label=paste(landfills_data$`Landfill Name`),
+        popup = ~paste(landfills_data$`Landfill Name`, 
+                       "<br>City: ",landfills_data$`City`,
+                       "<br>State: ",landfills_data$`State`,
+                       "<br>Ownership Type: ",landfills_data$`Ownership Type`,
+                       "<br>Operator Organization: ", landfills_data$`Landfill Operator Organization`,
+                       "<br>Owner: ", landfills_data$`Landfill Owner Organization(s)`,
+                       "<br>Waste in Place (U.S. ton): ", landfills_data$`Waste in Place (tons)`
+                       ),
+        group = "Privately Owned Landfills"
+      ) %>%
+      addCircleMarkers(
+        data = landfills_data %>% filter(`Ownership Type` == "Public/Private"),
+        radius = 2, 
+        fillColor = ~pal3(`Ownership Type`),
+        color = "white",
+        weight = 2,
+        fillOpacity = 2,
+        label=paste(landfills_data$`Landfill Name`),
+        popup = ~paste(landfills_data$`Landfill Name`, 
+                       "<br>City: ",landfills_data$`City`,
+                       "<br>State: ",landfills_data$`State`,
+                       "<br>Ownership Type: ",landfills_data$`Ownership Type`,
+                       "<br>Operator Organization: ", landfills_data$`Landfill Operator Organization`,
+                       "<br>Owner: ", landfills_data$`Landfill Owner Organization(s)`,
+                       "<br>Waste in Place (U.S. ton): ", landfills_data$`Waste in Place (tons)`
+                       ),
+        group = "Private/Public Co-Owned Landfills"
+      ) %>%
+      addCircleMarkers(
+        data = landfills_data %>% filter(`Ownership Type` == "Unknown"),
+        radius = 2, 
+        fillColor = ~pal3(`Ownership Type`),
+        color = "white",
+        weight = 2,
+        fillOpacity = 2,
+        label=paste(landfills_data$`Landfill Name`),
+        popup = ~paste(landfills_data$`Landfill Name`, 
+                       "<br>City: ",landfills_data$`City`,
+                       "<br>State: ",landfills_data$`State`,
+                       "<br>Ownership Type: ",landfills_data$`Ownership Type`,
+                       "<br>Operator Organization: ", landfills_data$`Landfill Operator Organization`,
+                       "<br>Owner: ", landfills_data$`Landfill Owner Organization(s)`,
+                       "<br>Waste in Place (U.S. ton): ", landfills_data$`Waste in Place (tons)`
+                       ),
+        group = "Ownership Unknown"
+      ) %>%
+        addRectangles(
+          lng1 = -104.0576,
+          lat1 = 42.4797,
+          lng2 = -96.4366,
+          lat2 = 45.9455,
+          weight = 4,
+          color = "red",
+          fill = FALSE
+      ) %>%
+      addLayersControl( 
+        baseGroups = c("Publicly Owned Landfills","Privately Owned Landfills","Private/Public Co-Owned Landfills","Ownership Unknown"),
+        overlayGroups = c("Public vs Private Ownership"),
+        options = layersControlOptions(collapsed = TRUE)) %>%  
+        addLabelOnlyMarkers(lng=-104.0576,lat=42.4797,
+                      label="South Dakota has no privately ownded landfills",
+                      labelOptions = labelOptions(noHide = TRUE, 
+                          style = list(
+                            "color" = "black", "font-family" = "serif",
+                            "font-style" = "bold","font-size" = "12px"))
+                            )   %>%  
+  
+        addLegend(position="bottomleft",
+                   title="Public Ownership of Landfills",
+                   labels=merged_ownership_data$ownership_labels,
+                   pal = ownership_pal,
+                   opacity = 0.4,
+                   values=na.omit(merged_ownership_data$ownership_labels) ) %>%
+        addLegend(position="bottomright",
+                   title="Ownership Type",
+                   labels = landfills_data$`Ownership Type`,
+                   pal = pal3,
+                   opacity = 2,
+                   values=na.omit(landfills_data$`Ownership Type`)
+                   )
+
+ownership_type %>% hideGroup(c("Publicly Owned Landfills","Privately Owned Landfills","Private/Public Co-Owned Landfills","Ownership Unknown"))
+
+#The addLayersControl function distinguishes between base groups, which can only be viewed one group at a time, and overlay groups, which can be individually checked or unchecked.
+#Although base groups are generally tile layers, and overlay groups are usually markers and shapes, there is no restriction on what types of layers can be placed in each category.
+#https://rstudio.github.io/leaflet/showhide.html
+
+
+
+
+# one insight <- very few states have have more private landfills than public landfills
+```
+
+In the visualization above, my aim was to see, at a glance, whether landfills are generally publicly or privately owned. Just looking at the number of landfills privately or publicly owned in each state might not provide much insight because that figure can be influenced by the number of landfills in the state. In the visualization above, at the state-level polygon layer, I have categorized each state into one of the four categories that is represented in the legend titled "Public Ownership of Landfills". We can see that there are very few states - only 12 - where more than 50% of the landfills are privately owned. In most of the states, 50% or more of the landfills being operated or closed are publicly owned. South Dakota - the state which is being highlighted by the red rectangle layer in the visualization above - does not have any privately owned landfills operating in the state based on the dataset being used in this report.
+
+### Total landfill waste per capita by states
+```{r}
+
+#page 146 last paragraph about selecting bin size to show sequential data
+
+
+merged_data$waste_per_capita <- merged_data$waste_in_tons/merged_data$pop_2014
+num_of_category <- 7
+
+#break sequence from 0 - 70 with 6 intervals total
+breaks <- round(seq(0, 
+                    ceiling(max(merged_data$waste_per_capita, na.rm = TRUE)/10*10), 
+                    length.out = num_of_category + 1))
+# break = [1]  0 10 20 30 40 50 60 70
+
+
+# Define the labels for each interval based on the range of number_landfills values
+labels <- c("0 to 9","10 to 19","20 to 29","30 to 39","40 to 49","50 to 59","60 or Above")
+merged_data$waste_per_capita_label <- cut(merged_data$waste_per_capita, breaks = breaks, labels = labels)
+
+color_pallete <- brewer.pal(7, "Reds")
+polygon_colors <- setNames(color_pallete, labels)
+pal_waste_per_capita <-colorFactor(palette = polygon_colors , domain = merged_data$waste_per_capita_label)
+
+state_by_waste_per_capita <- leaflet(merged_data)%>%
+  setView(lng = -98.35, lat = 39.50, zoom = 4) %>%
+  addTiles() %>% 
+  addProviderTiles("CartoDB.VoyagerLabelsUnder") %>%
+    addLabelOnlyMarkers(lng=-82.5,lat=41.5,
+                        label="Michigan has highest landfill waste per capita",
+                        labelOptions = labelOptions(noHide = TRUE, 
+                            style = list(
+                              "color" = "black", 
+                              "font-family" = "serif",
+                              "font-style" = "bold",
+                              "font-size" = "12px",
+                              group = "Rectangle Label"))
+                              )   %>%  
+  addPolygons(
+    data = merged_data,
+    weight=.75,   # line thickness
+    color="black",
+    fillColor = ~ pal_waste_per_capita(waste_per_capita_label),
+    label = ~ paste(NAME, ": ", round(waste_per_capita,2), " U.S.ton per capita"),
+    popup = ~paste(merged_data$NAME, 
+                   "<br>Waste Per Capita Category: ", merged_data$waste_per_capita_label,
+                   "<br>Landfill Waste Per Capita (U.S.ton): ", round(waste_per_capita,2),
+                   "<br>Landfill Waste in Million U.S. ton: ", round(merged_data$waste_in_tons/1000000,2),
+                   "<br>State Population: ", merged_data$pop_2014
+                   ),
+    fillOpacity = .8,
+    group = "Waste Per Capita")  %>% #transparency 
+    addRectangles(
+      lng1 = -90.5,
+      lat1 = 41.5,
+      lng2 = -82.5,
+      lat2 = 47.5,
+      weight = 3,
+      color = "red",
+      fillColor = "transparent",
+      label = "Michigan is the state with highest Landfill Waste Per capita",
+      group = "Highest Waste Per Capita"
+    )%>%
+    addRectangles(
+      lng1 =  -71.787131 ,
+      lat1 = 42.049968,
+      lng2 = -73.727775,
+      lat2 = 40.966417,
+      weight = 3,
+      color = "purple",
+      fillColor = "transparent",
+      label = "Connecticut is the state with lowest Landfill Waste Per capita",
+      group = "Lowest Landfill Waste Per Capita"
+    ) %>%
+    addLayersControl( 
+      overlayGroups = c("Waste Per Capita","Rectangle Label","Highest Waste Per Capita"),
+      options = layersControlOptions(collapsed = TRUE)) %>%
+    addLegend(position="bottomleft",
+               title="Landfill Waste Per Capita (U.S.ton)",
+               pal = pal_waste_per_capita,
+               labels=merged_data$waste_per_capita_label,
+               values=na.omit(merged_data$waste_per_capita_label),
+               opacity = .8
+              )
+
+state_by_waste_per_capita  %>% hideGroup(c("Rectangle Label"))
+#since displaying size of dot based on discrete value might. 
+
+# display the most efficient lfg collection plants
+```
+
+In the visualization above, I have used a choropleth map to represent the states based on their waste per capita. We have already seen from the first and second charts above that there are few states which have a lot of landfills, and it is usually related to population size. However, representing data in per capita terms reveals a few things that plotting total waste by state would never reveal. From the maps above, we saw that California and Texas have the highest and second-highest number of landfills present, and from the popups in the map, you can also see that they are the largest and second-largest state in terms of the amount of landfill waste in place. However, in per capita terms, Michigan has the most landfill waste per person, followed by Indiana. Rust belt states like Wisconsin, Pennsylvania, and Ohio also have high amounts of waste per capita. From the map above, we can distinctly see that Connecticut has the least amount of waste per capita among all states. It is the only state that has landfill waste per capita of less than 10 US tons.
+
+In the layers control, you can toggle the polygon layer that represents waste per capita for states or the rectangle that highlights the state of Michigan on/off.
+
+### Landfill Gas collected by state
+```{r}
+
+new_data <- merged_data 
+
+
+
+
+
+
+
+collected_breaks <- c(0, 24, 49, 74, Inf)
+collected_labels <- c("< 25%", " 25 % to 49% ", "50% to 74%", "75% to 100%")
+new_data$collected_labels <- cut(new_data$lfg_collected_percent, breaks = collected_breaks, labels = collected_labels)
+collected_color_pallete <- c("firebrick","red","green", "darkgreen") 
+collected_polygon_colors <- setNames(collected_color_pallete, collected_labels)
+collected_pal <-colorFactor(palette = collected_color_pallete , domain = merged_data$collected_labels)
+
+
+lfg_collection_map <- leaflet(new_data) %>%
+      setView(lng = -98.35, lat = 39.50, zoom = 4) %>%
+      addProviderTiles("CartoDB.VoyagerLabelsUnder")%>%
+      addPolygons(
+          data = new_data,
+          weight= 1.5,   
+          color="black",
+          fillColor = ~collected_pal(collected_labels),  # color by population
+          fillOpacity = .8 ,
+          label= paste(new_data$NAME),
+          popup = ~paste((new_data$NAME), 
+            "<br>Population: ", new_data$pop_2014,
+            "<br>LFG Collected (%) ", round(new_data$lfg_collected_percent,2)),
+          group = "LFG Collected (%)") %>%  
+   addLegend(position="bottomleft",
+               title="LFG Collected (%)",
+               labels=new_data$collected_labels,
+               pal = collected_pal,
+               values=na.omit(new_data$collected_labels),
+               opacity = .8
+              )
+lfg_collection_map 
+
+```
+
+LFG collection refers to the process of capturing or extracting the methane-rich gas that is produced in landfills due to the decomposition of organic waste materials in the landfill. These landfill gases are either extracted, flared (burned away to reduce environmental impact after extracting it because these gases are about 40-50% methane), or directly released into the atmosphere. A state that captures most of the LFG generated from its landfill is probably doing better in terms of limiting the harmful effects of releasing these greenhouse-causing gases directly into the atmosphere.
+
+In the visualization above, I have tried to see how different states compare in terms of capturing the LFG released from landfills. I have categorized the states into 4 categories: 1) that captures less than 25% of LFG, 2) between 25-50%, 3) 50-75%, and 4) 75% or more. Most states capture 50% or more of LFG generated from their landfills to reuse or flare them. There are only two states - Wyoming and North Dakota - that capture less than 25% of LFG generated from their landfills. While California and texas have the largest and second largest number of landfills, California fares significantly better in terms of collecting LFG gas. California colleges 89.56% of LFG generated whereas Texas collectes only 56.18% of the LFG generated. 
+
+
+
+# References
+
+Meirelles, I. (2013). Design for Information: An Introduction to the Histories, Theories, and Best Practices Behind Effective Information Visualizations. Rockport Publishers.
+
+
+
+
